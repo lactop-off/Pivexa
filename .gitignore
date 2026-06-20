@@ -15,3 +15,7 @@ out/
 .env
 /data/
 *.log
+
+# ランタイム生成物
+dump.rdb
+*.rdb
