@@ -1,24 +1,59 @@
 "use client";
 
-import { api, type AnalysisResult, type Interpretation } from "../lib/api";
+import { useState } from "react";
+import { api, ApiError, type AnalysisResult, type Interpretation } from "../lib/api";
 
 export function ResultView({
   result,
   interpretation,
+  resultId,
 }: {
   result: AnalysisResult;
   interpretation: Interpretation;
+  resultId?: number;
 }) {
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function downloadPdf() {
+    if (!resultId) return;
+    setDownloading(true);
+    setError("");
+    try {
+      const { report_id } = await api.post(`/results/${resultId}/report`, { format: "pdf" });
+      // 認証付きで取得して blob としてダウンロード
+      const res = await fetch(`${api.base}/reports/${report_id}`, { credentials: "include" });
+      if (!res.ok) throw new ApiError(res.status, "レポートの取得に失敗しました。", null);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `report_${report_id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "PDF生成に失敗しました。");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   return (
     <div>
       <div className="card">
         <div className="row no-print" style={{ alignItems: "center" }}>
           <h2 style={{ margin: 0 }}>解析結果</h2>
           <span className="spacer" />
+          {resultId && (
+            <button onClick={downloadPdf} disabled={downloading}>
+              {downloading ? "生成中..." : "PDFをダウンロード"}
+            </button>
+          )}
           <button className="secondary" onClick={() => window.print()}>
-            PDF / 印刷で出力
+            印刷
           </button>
         </div>
+        {error && <p className="error no-print">{error}</p>}
         <p className="muted">サンプル数: {result.sample_size}</p>
 
         {result.summary_metrics.length > 0 && (

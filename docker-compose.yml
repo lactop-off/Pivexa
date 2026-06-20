@@ -19,6 +19,8 @@ services:
 
   api:
     build: ./api
+    # 起動時に Alembic でスキーマを最新化してから API を起動
+    command: sh -c "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000"
     env_file: .env
     environment:
       - DATABASE_URL=postgresql+psycopg2://pivexa:pivexa@db:5432/pivexa

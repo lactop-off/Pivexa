@@ -27,5 +27,5 @@ export default function ResultPage({ params }: { params: Promise<{ id: string }>
   if (error) return <p className="error">{error}</p>;
   if (!result || !interpretation) return <p className="muted">読み込み中...</p>;
 
-  return <ResultView result={result} interpretation={interpretation} />;
+  return <ResultView result={result} interpretation={interpretation} resultId={Number(id)} />;
 }

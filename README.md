@@ -83,6 +83,16 @@ docs/            # 要件定義・基本設計・詳細設計
 
 - ✅ 分析フレーム＋7手法（テスト通過）、取り込み・プロファイリング、認証、ジョブ基盤、API、Docker 構成
 - ✅ フロントエンド本実装（画面 S-01〜S-10、ビルド通過）
-- 🚧 レポート PDF 生成はブラウザ印刷（`window.print`）。サーバ側 WeasyPrint 出力は今後
-- 🚧 Alembic マイグレーション（現状は起動時 `create_all`）
+- ✅ サーバ側 PDF レポート生成（WeasyPrint、グラフ埋め込み・日本語対応）。ブラウザ印刷も併用可
+- ✅ Alembic マイグレーション（`alembic upgrade head`。Docker 起動時に自動適用）
 - 後フェーズ: 多変量解析・時系列、クラウド/マルチテナント SaaS・課金
+
+## マイグレーション
+
+```bash
+cd api
+alembic upgrade head          # スキーマを最新化
+alembic revision --autogenerate -m "説明"   # モデル変更から差分生成
+```
+
+Docker では api コンテナ起動時に `alembic upgrade head` が自動実行される。

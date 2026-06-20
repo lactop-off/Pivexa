@@ -23,12 +23,14 @@ from core.auth.security import (
     verify_password,
 )
 from core.dataset import profiling
+from core.report import generator
 from db.models import (
     AnalysisJob,
     AnalysisResultRow,
     Dataset,
     DatasetColumn,
     Preprocessing,
+    Report,
     User,
 )
 from db.session import get_db, init_db
@@ -276,6 +278,56 @@ def get_result(result_id: int, db: Session = Depends(get_db), user: User = Depen
 def _row_count(db: Session, dataset_id: int) -> int:
     ds = db.get(Dataset, dataset_id)
     return ds.row_count if ds and ds.row_count else 0
+
+
+# --- レポート出力 -----------------------------------------------------------
+class ReportReq(BaseModel):
+    format: str = "pdf"
+
+
+@app.post("/results/{result_id}/report", status_code=201)
+def create_report(
+    result_id: int,
+    body: ReportReq,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
+    row = db.get(AnalysisResultRow, result_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="結果が見つかりません。")
+    job = db.get(AnalysisJob, row.job_id)
+    dataset = db.get(Dataset, job.dataset_id) if job else None
+    try:
+        title = f"{get_method(row.result['method']).display_name} レポート"
+    except UnknownMethodError:
+        title = "解析レポート"
+
+    html = generator.build_html(
+        title=title,
+        dataset_name=dataset.name if dataset else "—",
+        result=row.result,
+        interpretation=row.interpretation,
+    )
+    pdf = generator.render_pdf(html)
+
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    path = os.path.join(REPORTS_DIR, f"report_{uuid.uuid4().hex}.pdf")
+    with open(path, "wb") as f:
+        f.write(pdf)
+
+    rep = Report(result_id=result_id, format="pdf", file_path=path)
+    db.add(rep)
+    db.commit()
+    db.refresh(rep)
+    return {"report_id": rep.id, "format": "pdf"}
+
+
+@app.get("/reports/{report_id}")
+def download_report(report_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    rep = db.get(Report, report_id)
+    if not rep or not os.path.exists(rep.file_path):
+        raise HTTPException(status_code=404, detail="レポートが見つかりません。")
+    return FileResponse(rep.file_path, media_type="application/pdf", filename=f"report_{report_id}.pdf")
 
 
 # --- グラフ画像配信 ---------------------------------------------------------

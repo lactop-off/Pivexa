@@ -32,6 +32,7 @@ export default function AnalyzePage({ params }: { params: Promise<{ id: string }
   const [issues, setIssues] = useState<string[]>([]);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [interpretation, setInterpretation] = useState<Interpretation | null>(null);
+  const [resultId, setResultId] = useState<number | undefined>(undefined);
 
   useEffect(() => {
     if (ready) api.get("/methods").then(setMethods).catch(() => {});
@@ -98,6 +99,7 @@ export default function AnalyzePage({ params }: { params: Promise<{ id: string }
     const data = await api.get(`/results/${resultId}`);
     setResult(data.result);
     setInterpretation(data.interpretation);
+    setResultId(resultId);
     setPhase("result");
   }
 
@@ -120,7 +122,7 @@ export default function AnalyzePage({ params }: { params: Promise<{ id: string }
               ← 別の分析を行う
             </button>
           </div>
-          <ResultView result={result} interpretation={interpretation} />
+          <ResultView result={result} interpretation={interpretation} resultId={resultId} />
         </>
       ) : (
         <div className="card">
