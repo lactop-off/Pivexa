@@ -93,6 +93,11 @@ def test_logistic_regression(df):
     res, interp = run_analysis(cfg, df)
     assert any(m.key == "auc" for m in res.summary_metrics)
     assert all("odds_ratio" in c.extra for c in res.coefficients)
+    # 既定で大きい方の値(1)を陽性とするため、buy と正の関係にある ad_cost の
+    # オッズ比は1より大きい（向きが直感に沿う）。
+    assert res.tables["positive_label"] == "1"
+    ad = next(c for c in res.coefficients if c.variable == "ad_cost")
+    assert ad.extra["odds_ratio"] > 1
 
 
 def test_validate_catches_bad_config(df):

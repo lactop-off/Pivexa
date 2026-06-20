@@ -70,7 +70,9 @@ class LogisticRegression(AnalysisMethod):
                 warnings=[f"目的変数が2値ではありません（{len(levels)}水準）。"],
             )
         if positive is None:
-            positive = levels[1]
+            # 既定は「大きい方の値」を陽性とする。0/1 なら 1、Yes/No なら "Yes"。
+            # これによりオッズ比の向きが直感に沿う（出現順依存を解消）。
+            positive = sorted(levels)[-1]
         y = (raw == positive).astype(int)
 
         X = _dummy_encode(sub, cols).astype(float)
@@ -132,6 +134,12 @@ class LogisticRegression(AnalysisMethod):
         if not result.summary_metrics:
             return Interpretation(sentences=[InterpretSentence(level="caution", text=" / ".join(result.warnings))])
         sentences: list[InterpretSentence] = []
+        positive = result.tables.get("positive_label")
+        if positive is not None:
+            sentences.append(InterpretSentence(
+                level="info",
+                text=f"「{positive}」を陽性（=起こった側）として分析しています。オッズ比はこの向きでの値です。",
+            ))
         m = {x.key: x for x in result.summary_metrics}
         auc = m["auc"].value
         if isinstance(auc, (int, float)):
