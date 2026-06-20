@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import pandas as pd
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -34,6 +35,7 @@ from db.session import get_db, init_db
 from tasks.jobs import execute_job, execute_job_task
 
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/data/uploads")
+REPORTS_DIR = os.environ.get("REPORTS_DIR", "/data/reports")
 SYNC_ROW_THRESHOLD = 10_000
 SYNC_METHODS = {"descriptive", "correlation"}
 
@@ -274,3 +276,54 @@ def get_result(result_id: int, db: Session = Depends(get_db), user: User = Depen
 def _row_count(db: Session, dataset_id: int) -> int:
     ds = db.get(Dataset, dataset_id)
     return ds.row_count if ds and ds.row_count else 0
+
+
+# --- グラフ画像配信 ---------------------------------------------------------
+@app.get("/charts/{name}")
+def get_chart(name: str, user: User = Depends(current_user)):
+    safe = os.path.basename(name)  # パストラバーサル対策
+    path = os.path.join(REPORTS_DIR, safe)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="画像が見つかりません。")
+    return FileResponse(path, media_type="image/png")
+
+
+# --- 現在のユーザー ---------------------------------------------------------
+@app.get("/auth/me")
+def me(user: User = Depends(current_user)):
+    return {"id": user.id, "username": user.username, "role": user.role}
+
+
+# --- ユーザー管理（管理者）--------------------------------------------------
+class UserReq(BaseModel):
+    username: str
+    password: str
+
+
+@app.get("/users")
+def list_users(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    rows = db.query(User).order_by(User.created_at.asc()).all()
+    return [{"id": u.id, "username": u.username, "role": u.role} for u in rows]
+
+
+@app.post("/users", status_code=201)
+def create_user(body: UserReq, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if db.query(User).filter(User.username == body.username).first():
+        raise HTTPException(status_code=409, detail="同名のユーザーが既に存在します。")
+    u = User(username=body.username, password_hash=hash_password(body.password), role="admin")
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+    return {"id": u.id, "username": u.username, "role": u.role}
+
+
+@app.delete("/users/{user_id}")
+def delete_user(user_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if db.query(User).count() <= 1:
+        raise HTTPException(status_code=400, detail="最後のユーザーは削除できません。")
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="ユーザーが見つかりません。")
+    db.delete(target)
+    db.commit()
+    return {"ok": True}

@@ -1,46 +1,88 @@
 "use client";
 
-import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { api, ApiError } from "../lib/api";
+import { useRequireAuth } from "../lib/useRequireAuth";
+import { Steps } from "../components/Steps";
 
-const API = process.env.NEXT_PUBLIC_API_BASE ?? "/api";
+type Dataset = {
+  id: number;
+  name: string;
+  format: string;
+  row_count: number;
+  col_count: number;
+};
 
-/**
- * MVP のリファレンス画面（スケルトン）。
- * 「設定 → 実行 → 結果 → 解釈」の共通フローを最小構成で示す。
- * 本格的な画面（S-01〜S-10）は今後の実装で拡充する。
- */
-export default function Home() {
-  const [status, setStatus] = useState<string>("");
+export default function HomePage() {
+  const ready = useRequireAuth();
+  const router = useRouter();
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [error, setError] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  async function ping() {
+  function reload() {
+    api.get("/datasets").then(setDatasets).catch(() => {});
+  }
+  useEffect(() => {
+    if (ready) reload();
+  }, [ready]);
+
+  async function upload(file: File) {
+    setError("");
+    setUploading(true);
     try {
-      const res = await fetch(`${API}/health`);
-      const data = await res.json();
-      setStatus(`API: ${data.status}`);
-    } catch (e) {
-      setStatus(`API へ接続できません: ${String(e)}`);
+      const ds = await api.upload("/datasets", file);
+      router.push(`/datasets/${ds.id}/profile`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "アップロードに失敗しました。");
+    } finally {
+      setUploading(false);
     }
   }
 
+  if (!ready) return <p className="muted">読み込み中...</p>;
+
   return (
     <div>
-      <h1>統計解析ツール（MVP スケルトン）</h1>
-      <p>
-        データをアップロードし、前処理 → 分析手法と変数を設定 → 実行 → 結果・解釈、の流れで利用します。
-        本ページは疎通確認用のスケルトンです。
-      </p>
-      <ol>
-        <li>データアップロード（CSV / Excel）</li>
-        <li>自動プロファイリング・前処理（推奨値の提示）</li>
-        <li>分析手法の選択（標準セット7手法）</li>
-        <li>実行（重い処理は非同期）</li>
-        <li>結果表示＋テンプレート解釈サポート</li>
-        <li>PDF / 画像レポート出力</li>
-      </ol>
-      <button onClick={ping} style={{ padding: "8px 16px", cursor: "pointer" }}>
-        API 疎通確認
-      </button>
-      {status && <p>{status}</p>}
+      <Steps current={0} />
+      <div className="card">
+        <h1>データセット</h1>
+        <p className="muted">CSV または Excel ファイルをアップロードして解析を始めます。</p>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".csv,.xlsx,.xls"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) upload(f);
+          }}
+        />
+        <button onClick={() => fileRef.current?.click()} disabled={uploading}>
+          {uploading ? "アップロード中..." : "＋ ファイルをアップロード"}
+        </button>
+        {error && <p className="error">{error}</p>}
+      </div>
+
+      <div className="card">
+        <h2>アップロード済み</h2>
+        {datasets.length === 0 && <p className="muted">まだデータがありません。</p>}
+        {datasets.map((d) => (
+          <div key={d.id} className="dataset-item">
+            <span className="name">{d.name}</span>
+            <span className="muted">
+              {d.format.toUpperCase()} / {d.row_count}行 × {d.col_count}列
+            </span>
+            <span className="spacer" />
+            <Link href={`/datasets/${d.id}/profile`}>
+              <button className="secondary">開く</button>
+            </Link>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
