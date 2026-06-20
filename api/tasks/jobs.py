@@ -9,15 +9,14 @@ import pandas as pd
 from analysis import charts
 from analysis.runner import run_analysis
 from analysis.schema import AnalysisConfig
+from db.models import AnalysisJob, AnalysisResultRow, Dataset, Preprocessing
+from db.session import SessionLocal
 
 REPORTS_DIR = os.environ.get("REPORTS_DIR", "/data/reports")
 
 
 def execute_job(job_id: int) -> int:
     """ジョブを実行し result_id を返す。Celery タスク・同期実行の双方から呼ばれる。"""
-    from db.models import AnalysisJob, AnalysisResultRow, Dataset, Preprocessing
-    from db.session import SessionLocal
-
     charts.set_output_dir(REPORTS_DIR)
     db = SessionLocal()
     try:

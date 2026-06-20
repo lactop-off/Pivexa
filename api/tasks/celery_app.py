@@ -2,6 +2,13 @@
 from __future__ import annotations
 
 import os
+import sys
+
+# Celery の fork プールワーカーには cwd が sys.path に入らないため、api ルートを
+# 明示的に追加する（`from db.models import ...` 等の絶対 import を解決するため）。
+_API_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _API_ROOT not in sys.path:
+    sys.path.insert(0, _API_ROOT)
 
 from celery import Celery
 
