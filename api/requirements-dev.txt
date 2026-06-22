@@ -1,0 +1,4 @@
+# テスト専用の依存（本番イメージには含めない）。
+# FastAPI の TestClient は内部で httpx を利用する。
+-r requirements.txt
+httpx==0.28.1
