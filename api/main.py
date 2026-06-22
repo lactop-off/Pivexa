@@ -42,10 +42,15 @@ SYNC_ROW_THRESHOLD = 10_000
 SYNC_METHODS = {"descriptive", "correlation"}
 
 app = FastAPI(title="Pivexa 統計解析ツール API")
+# CORS。ワイルドカード(*)と allow_credentials=True はブラウザ仕様上併用できない
+# （Cookie付きリクエストでは Access-Control-Allow-Origin に * を使えない）。
+# そのため、オリジンを明示指定した場合のみ credentials(Cookie認証) を許可する。
+# 既定の同一オリジン構成(nginx 経由)では CORS 自体が発生しないため影響しない。
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
