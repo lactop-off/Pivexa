@@ -50,6 +50,9 @@ class LogisticRegression(AnalysisMethod):
             issues.append(Issue(level="error", message="目的変数を選択してください。"))
         if not config.explanatory:
             issues.append(Issue(level="error", message="説明変数を1つ以上選択してください。"))
+        # 行数は profile で判定可能。2値判定・各クラス件数はデータ依存のため run でガードする。
+        if dataset.n_rows < self.min_rows:
+            issues.append(Issue(level="error", message=f"ロジスティック回帰には{self.min_rows}件以上が必要です。"))
         return ValidationResult(ok=not any(i.level == "error" for i in issues), issues=issues)
 
     def run(self, config: AnalysisConfig, df: pd.DataFrame) -> AnalysisResult:
@@ -69,6 +72,21 @@ class LogisticRegression(AnalysisMethod):
                 method=self.name, sample_size=len(sub),
                 warnings=[f"目的変数が2値ではありません（{len(levels)}水準）。"],
             )
+
+        # データ依存の前提検査（個別手法編 7）。profile では各クラス件数や
+        # 欠損除去後の行数が分からないため、run の冒頭でガードしクラッシュを防ぐ。
+        if len(sub) < self.min_rows:
+            return AnalysisResult(
+                method=self.name, sample_size=len(sub),
+                warnings=[f"有効データが{len(sub)}件と少なく、ロジスティック回帰には{self.min_rows}件以上が必要です。"],
+            )
+        class_counts = raw.value_counts()
+        too_small = [str(lv) for lv in levels if int(class_counts.get(lv, 0)) < 5]
+        if too_small:
+            return AnalysisResult(
+                method=self.name, sample_size=len(sub),
+                warnings=[f"各クラスに5件以上必要ですが、件数が不足するクラスがあります（{', '.join(too_small)}）。"],
+            )
         if positive is None:
             # 既定は「大きい方の値」を陽性とする。0/1 なら 1、Yes/No なら "Yes"。
             # これによりオッズ比の向きが直感に沿う（出現順依存を解消）。
@@ -78,7 +96,20 @@ class LogisticRegression(AnalysisMethod):
         X = _dummy_encode(sub, cols).astype(float)
         X = sm.add_constant(X, has_constant="add")
 
-        model = sm.Logit(y, X).fit(disp=False)
+        # 完全分離・特異行列では (a) 例外送出 (b) 収束失敗(発散パラメータ) の
+        # どちらも起こりうる。両方を graceful に警告へ変換し、ジョブを error にしない。
+        try:
+            model = sm.Logit(y, X).fit(disp=False)
+        except Exception:  # noqa: BLE001  特異行列など数値的に推定不能
+            model = None
+        if model is None or not getattr(model, "mle_retvals", {}).get("converged", True):
+            return AnalysisResult(
+                method=self.name, sample_size=len(sub),
+                warnings=[
+                    "データが完全に分離しているなどの理由でモデルを推定できませんでした"
+                    "（説明変数が目的変数をほぼ完全に説明している可能性があります）。"
+                ],
+            )
         conf = model.conf_int()
 
         coefs: list[CoefficientRow] = []
@@ -105,8 +136,15 @@ class LogisticRegression(AnalysisMethod):
         except ValueError:
             auc, fpr, tpr = float("nan"), [0, 1], [0, 1]
 
-        # 混同行列
-        cm = pd.crosstab(y, pred, rownames=["実測"], colnames=["予測"]).to_dict()
+        # 混同行列（行=実測, 列=予測）。予測が片側に偏っても 0/1 の2x2を保つよう
+        # reindex で欠けた行・列を 0 埋めする。
+        cm_df = (
+            pd.crosstab(y, pred, rownames=["実測"], colnames=["予測"])
+            .reindex(index=[0, 1], columns=[0, 1], fill_value=0)
+        )
+        cm = cm_df.to_dict()
+        # 表示は陽性ラベルに合わせ「0=陰性 / 1=陽性」を明示する。
+        cm_labels = [f"0（非{positive}）", f"1（{positive}）"]
 
         metrics = [
             Metric(key="pseudo_r2", label="疑似R²(McFadden)", value=round(float(model.prsquared), 4)),
@@ -117,6 +155,10 @@ class LogisticRegression(AnalysisMethod):
         ref = charts.roc_curve_chart(fpr, tpr, "ROC曲線")
         if ref:
             chart_refs.append(ref)
+        # 混同行列の図（個別手法編 8）。
+        cref = charts.confusion_matrix_chart(cm_df.values, cm_labels, "混同行列")
+        if cref:
+            chart_refs.append(cref)
 
         # クラス不均衡チェック
         warnings = []

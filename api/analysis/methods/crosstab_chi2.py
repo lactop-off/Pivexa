@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .. import charts
 from ..base import AnalysisMethod, DatasetProfile
 from ..interpret import small_sample_caution
 from ..registry import register
@@ -59,6 +60,15 @@ class CrosstabChi2(AnalysisMethod):
         col_col = config.options.get("col", config.explanatory[1])
         sub = df[[row_col, col_col]].dropna()
         observed = pd.crosstab(sub[row_col], sub[col_col])
+
+        # データ依存の前提検査（個別手法編 3）。profile はカテゴリ数を持たないため
+        # 各列の水準数（2以上）を run の冒頭でガードし、クラッシュを防ぐ。
+        if observed.shape[0] < 2 or observed.shape[1] < 2:
+            return AnalysisResult(
+                method=self.name, sample_size=len(sub),
+                warnings=["クロス集計には、2列それぞれにカテゴリが2種類以上必要です。"],
+            )
+
         chi2, p, dof, expected = stats.chi2_contingency(observed)
         cv = _cramers_v(chi2, observed.values.sum(), observed.shape[0], observed.shape[1])
 
@@ -74,9 +84,23 @@ class CrosstabChi2(AnalysisMethod):
             Metric(key="dof", label="自由度", value=int(dof)),
             Metric(key="cramers_v", label="Cramér's V", value=round(cv, 4)),
         ]
+
+        # カテゴリ別のグループ化棒グラフ（個別手法編 3/8）。
+        # 横軸を行カテゴリ、系列を列カテゴリとして観測度数を可視化する。
+        chart_refs = []
+        cref = charts.grouped_bar(
+            [str(i) for i in observed.index],
+            {str(c): [float(v) for v in observed[c]] for c in observed.columns},
+            f"{row_col} × {col_col} のクロス集計",
+            legend_title=str(col_col),
+        )
+        if cref:
+            chart_refs.append(cref)
+
         return AnalysisResult(
             method=self.name,
             summary_metrics=metrics,
+            charts=chart_refs,
             tables={
                 "observed": observed.to_dict(),
                 "expected": pd.DataFrame(
@@ -88,6 +112,10 @@ class CrosstabChi2(AnalysisMethod):
         )
 
     def interpret(self, result: AnalysisResult) -> Interpretation:
+        if not result.summary_metrics:
+            return Interpretation(sentences=[
+                InterpretSentence(level="caution", text=" / ".join(result.warnings))
+            ])
         m = {x.key: x for x in result.summary_metrics}
         p = float(m["p_value"].value)
         cv = float(m["cramers_v"].value)

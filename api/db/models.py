@@ -7,9 +7,11 @@ from sqlalchemy import (
     BigInteger,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -48,6 +50,10 @@ class Dataset(Base):
 
 class DatasetColumn(Base):
     __tablename__ = "dataset_columns"
+    # 6: 同一データセット内の列名は一意（複合 UNIQUE 制約）
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "name", name="uq_dataset_columns_dataset_name"),
+    )
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     dataset_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
@@ -72,6 +78,11 @@ class Preprocessing(Base):
 
 class AnalysisJob(Base):
     __tablename__ = "analysis_jobs"
+    # 6: ステータス絞り込み・データセット別取得を高速化する索引
+    __table_args__ = (
+        Index("idx_jobs_status", "status"),
+        Index("idx_jobs_dataset", "dataset_id"),
+    )
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     dataset_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("datasets.id", ondelete="CASCADE"), nullable=False
@@ -87,6 +98,10 @@ class AnalysisJob(Base):
 
 class AnalysisResultRow(Base):
     __tablename__ = "analysis_results"
+    # 6: ジョブ別の結果取得を高速化する索引
+    __table_args__ = (
+        Index("idx_results_job", "job_id"),
+    )
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     job_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("analysis_jobs.id", ondelete="CASCADE"), nullable=False

@@ -107,6 +107,147 @@ def test_validate_catches_bad_config(df):
     assert vr.has_error
 
 
+def test_logistic_emits_confusion_chart(df, tmp_path):
+    """logistic 実行時、charts に混同行列(kind=confusion)が含まれること。"""
+    from analysis import charts
+
+    charts.set_output_dir(str(tmp_path))
+    try:
+        cfg = AnalysisConfig(method="logistic_regression", target="buy",
+                             explanatory=["ad_cost", "temp"])
+        res, _ = run_analysis(cfg, df)
+    finally:
+        charts.set_output_dir(None)
+    kinds = {c.kind for c in res.charts}
+    assert "confusion" in kinds
+    # ROC も併せて出力される。
+    assert "roc" in kinds
+
+
+def test_crosstab_emits_bar_chart(df, tmp_path):
+    """crosstab 実行時、charts に棒グラフ(kind=bar)が含まれること。"""
+    from analysis import charts
+
+    charts.set_output_dir(str(tmp_path))
+    try:
+        cfg = AnalysisConfig(method="crosstab_chi2", explanatory=["group", "region"])
+        res, _ = run_analysis(cfg, df)
+    finally:
+        charts.set_output_dir(None)
+    assert any(c.kind == "bar" for c in res.charts)
+
+
+def test_anova_validate_rejects_non_numeric_target(df):
+    """anova の validate は数値でない対象変数をエラーにする（profileで判定可能）。"""
+    method = get_method("anova")
+    profile = DatasetProfile.from_dataframe(df)
+    vr = method.validate(
+        AnalysisConfig(method="anova", target="group", options={"group": "region"}),
+        profile,
+    )
+    assert vr.has_error
+
+
+def test_anova_run_guards_two_level_group():
+    """anova の run は群が2水準しかない場合、クラッシュせずエラーで返す。"""
+    small = pd.DataFrame({
+        "y": [1.0, 2, 3, 4, 5, 6],
+        "g": ["A", "A", "A", "B", "B", "B"],  # 2水準のみ
+    })
+    cfg = AnalysisConfig(method="anova", target="y", options={"group": "g"})
+    res, interp = run_analysis(cfg, small)
+    # 正常系の指標は出ず、警告にエラーメッセージが入る。interpret も落ちない。
+    assert not res.summary_metrics
+    assert res.warnings
+    assert interp.sentences
+
+
+def test_logistic_run_guards_tiny_class():
+    """logistic の run は各クラス<5件のとき、クラッシュせずエラーで返す。"""
+    small = pd.DataFrame({
+        "x": list(range(12)),
+        "y": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1],  # 陽性が2件のみ(<5)
+    })
+    cfg = AnalysisConfig(method="logistic_regression", target="y", explanatory=["x"])
+    res, interp = run_analysis(cfg, small)
+    assert not res.summary_metrics
+    assert res.warnings
+    assert interp.sentences
+
+
+def test_ttest_run_guards_single_observation_group():
+    """ttest の run は片群が1件以下のとき、クラッシュせずエラーで返す。"""
+    small = pd.DataFrame({
+        "y": [1.0, 2.0, 3.0, 4.0],
+        "g": ["A", "A", "A", "B"],  # B が1件のみ
+    })
+    cfg = AnalysisConfig(method="ttest", target="y", options={"group": "g"})
+    res, interp = run_analysis(cfg, small)
+    assert not res.summary_metrics
+    assert res.warnings
+    assert interp.sentences
+
+
+def test_crosstab_run_guards_single_category():
+    """crosstab の run は片方の列が1カテゴリしかないとき、エラーで返す。"""
+    small = pd.DataFrame({
+        "a": ["X", "X", "X", "X"],  # 1カテゴリのみ
+        "b": ["P", "Q", "P", "Q"],
+    })
+    cfg = AnalysisConfig(method="crosstab_chi2", explanatory=["a", "b"])
+    res, interp = run_analysis(cfg, small)
+    assert not res.summary_metrics
+    assert res.warnings
+    assert interp.sentences
+
+
+def test_linear_validate_rejects_too_few_rows_for_vars(df):
+    """linear の validate は行数が説明変数の数以下のときエラー（profileで判定可能）。"""
+    method = get_method("linear_regression")
+    # 行数3、説明変数3 -> n_rows <= len+1
+    tiny_profile = DatasetProfile(
+        {"sales": "numeric", "ad_cost": "numeric", "temp": "numeric", "region": "categorical"},
+        n_rows=3,
+    )
+    vr = method.validate(
+        AnalysisConfig(method="linear_regression", target="sales",
+                       explanatory=["ad_cost", "temp", "region"]),
+        tiny_profile,
+    )
+    assert vr.has_error
+
+
+def test_linear_run_guards_perfect_collinearity():
+    """linear の run は完全多重共線のとき、クラッシュせずエラーで返す。"""
+    n = 20
+    x1 = np.arange(n, dtype=float)
+    small = pd.DataFrame({
+        "y": x1 + 1.0,
+        "x1": x1,
+        "x2": x1 * 2.0,  # x1 と完全従属
+    })
+    cfg = AnalysisConfig(method="linear_regression", target="y",
+                         explanatory=["x1", "x2"])
+    res, interp = run_analysis(cfg, small)
+    assert not res.summary_metrics
+    assert res.warnings
+    assert interp.sentences
+
+
+def test_logistic_run_guards_perfect_separation():
+    """logistic は完全分離データでも 500/例外でなく、警告付きで graceful に返す。"""
+    # x が小さいと必ず y=0、大きいと必ず y=1（完全分離）。各クラス6件で件数ガードは通過。
+    small = pd.DataFrame({
+        "x": [0.0, 1, 2, 3, 4, 5, 100, 101, 102, 103, 104, 105],
+        "y": [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
+    })
+    cfg = AnalysisConfig(method="logistic_regression", target="y", explanatory=["x"])
+    res, interp = run_analysis(cfg, small)
+    assert not res.summary_metrics
+    assert res.warnings
+    assert interp.sentences
+
+
 def test_charts_render_japanese_without_missing_glyph(tmp_path):
     """日本語ラベルのグラフでフォント欠落(豆腐)が起きないこと。"""
     import warnings
