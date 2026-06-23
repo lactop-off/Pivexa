@@ -202,6 +202,52 @@ def list_datasets(db: Session = Depends(get_db), user: User = Depends(current_us
              "row_count": d.row_count, "col_count": d.col_count} for d in rows]
 
 
+@app.get("/datasets/{dataset_id}")
+def get_dataset(dataset_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """データセット単体のメタ情報を返す（基本設計§6）。"""
+    ds = db.get(Dataset, dataset_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="データセットが見つかりません。")
+    return {"id": ds.id, "name": ds.name, "format": ds.format,
+            "row_count": ds.row_count, "col_count": ds.col_count,
+            "created_at": ds.created_at}
+
+
+@app.delete("/datasets/{dataset_id}")
+def delete_dataset(dataset_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """データセットを削除する（基本設計§6）。
+
+    関連する dataset_columns / preprocessings / analysis_jobs（→ analysis_results
+    → reports）は FK の ON DELETE CASCADE で連鎖削除される。ORM の delete でも
+    DB 側カスケードがそのまま効くため、ここでは Dataset を 1 行削除すればよい。
+    物理ファイルは存在すれば削除するが、失敗しても DB 削除は実施する。
+    """
+    ds = db.get(Dataset, dataset_id)
+    if not ds:
+        raise HTTPException(status_code=404, detail="データセットが見つかりません。")
+    # 破壊操作（カスケードで結果・レポートまで消える）。最小権限として
+    # 所有者または管理者のみ許可する。MVP は全員 admin のため実害なく将来に備える。
+    if user.role != "admin" and ds.created_by != user.id:
+        raise HTTPException(status_code=403, detail="このデータセットを削除する権限がありません。")
+
+    file_path = ds.file_path
+    db.delete(ds)
+    db.commit()
+
+    # 物理ファイル削除は DB 削除の後（孤児ファイルより孤児レコードを避ける）。
+    # 失敗は握りつぶす（既に消えている・権限等。痕跡だけ残す）。
+    if file_path and os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except OSError:
+            logging.getLogger("pivexa.dataset").warning(
+                "データセットの物理ファイル削除に失敗しました: %s", file_path,
+            )
+
+    _audit(db, user.id, "delete_dataset", str(dataset_id))
+    return {"ok": True}
+
+
 @app.get("/datasets/{dataset_id}/profile")
 def get_profile(dataset_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
     cols = db.query(DatasetColumn).filter(DatasetColumn.dataset_id == dataset_id).all()

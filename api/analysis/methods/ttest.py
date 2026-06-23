@@ -65,6 +65,7 @@ class TTest(AnalysisMethod):
         return ValidationResult(ok=not any(i.level == "error" for i in issues), issues=issues)
 
     def run(self, config: AnalysisConfig, df: pd.DataFrame) -> AnalysisResult:
+        alpha = float(config.options.get("alpha", 0.05))
         target = config.target
         group = config.options["group"]
         equal_var = bool(config.options.get("equal_var", False))
@@ -104,7 +105,7 @@ class TTest(AnalysisMethod):
             Metric(key="mean_b", label=f"{levels[1]} の平均", value=round(float(b.mean()), 4)),
             Metric(key="mean_diff", label="平均差", value=round(mean_diff, 4)),
             Metric(key="t", label="t値", value=round(float(t), 4)),
-            Metric(key="p_value", label="P値", value=round(float(p), 4), significant=p < 0.05),
+            Metric(key="p_value", label="P値", value=round(float(p), 4), significant=p < alpha),
             Metric(key="ci_low", label="差の95%CI下限", value=round(float(ci_low), 4)),
             Metric(key="ci_high", label="差の95%CI上限", value=round(float(ci_high), 4)),
             Metric(key="cohens_d", label="効果量 (Cohen's d)", value=round(d, 4)),
@@ -117,7 +118,7 @@ class TTest(AnalysisMethod):
 
         return AnalysisResult(
             method=self.name, summary_metrics=metrics, charts=chart_refs,
-            tables={"levels": [str(x) for x in levels]}, sample_size=len(sub),
+            tables={"levels": [str(x) for x in levels], "alpha": alpha}, sample_size=len(sub),
         )
 
     def interpret(self, result: AnalysisResult) -> Interpretation:
@@ -127,8 +128,9 @@ class TTest(AnalysisMethod):
         p = float(m["p_value"].value)
         diff = float(m["mean_diff"].value)
         d = abs(float(m["cohens_d"].value))
-        sentences = [significance_sentence("2群の平均差", p)]
-        if p < 0.05:
+        alpha = float(result.tables.get("alpha", 0.05))
+        sentences = [significance_sentence("2群の平均差", p, alpha=alpha)]
+        if p < alpha:
             rel = "高い" if diff > 0 else "低い"
             size = "大きな" if d >= 0.8 else "中程度の" if d >= 0.5 else "小さな"
             sentences.append(InterpretSentence(

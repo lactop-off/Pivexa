@@ -248,6 +248,97 @@ def test_logistic_run_guards_perfect_separation():
     assert interp.sentences
 
 
+def test_linear_emits_residual_chart(df, tmp_path):
+    """linear 実行時、charts に残差プロット(kind=residual)が含まれること（個別手法編 6）。"""
+    from analysis import charts
+
+    charts.set_output_dir(str(tmp_path))
+    try:
+        cfg = AnalysisConfig(method="linear_regression", target="sales",
+                             explanatory=["ad_cost", "temp", "region"])
+        res, _ = run_analysis(cfg, df)
+    finally:
+        charts.set_output_dir(None)
+    kinds = {c.kind for c in res.charts}
+    assert "residual" in kinds
+    # 既存の予測vs実測 scatter も併せて出力される（非回帰）。
+    assert "scatter" in kinds
+
+
+def test_linear_standardized_coefficients(df):
+    """options.standardize=True で係数の extra に std_coef が入る（個別手法編 6）。"""
+    cfg = AnalysisConfig(method="linear_regression", target="sales",
+                         explanatory=["ad_cost", "temp"],
+                         options={"standardize": True})
+    res, interp = run_analysis(cfg, df)
+    assert all("std_coef" in c.extra for c in res.coefficients)
+    # 標準化係数を出した旨の解釈文が1つ追加される。
+    assert any("標準化係数" in s.text for s in interp.sentences)
+
+
+def test_linear_no_standardized_by_default(df):
+    """standardize 未指定（既定）では std_coef を付与しない（非回帰）。"""
+    cfg = AnalysisConfig(method="linear_regression", target="sales",
+                         explanatory=["ad_cost", "temp"])
+    res, _ = run_analysis(cfg, df)
+    assert all("std_coef" not in c.extra for c in res.coefficients)
+
+
+def test_significance_sentence_alpha_changes_verdict():
+    """significance_sentence は alpha により有意/非有意の文言が変わる（個別手法編 0）。"""
+    from analysis.interpret import significance_sentence
+
+    # p=0.07 は alpha=0.05 では非有意、alpha=0.10 では有意。
+    s05 = significance_sentence("x", 0.07, alpha=0.05)
+    s10 = significance_sentence("x", 0.07, alpha=0.10)
+    assert s05.level == "info"
+    assert "有意とは言えません" in s05.text
+    assert s10.level == "highlight"
+    assert "有意です" in s10.text
+    # 既定（alpha=0.05）は従来挙動（非回帰）。
+    assert significance_sentence("x", 0.07).level == "info"
+
+
+def test_alpha_affects_significance_flag(df):
+    """alpha=0.1 と既定0.05 で Metric.significant の判定が変わりうる構成を確認。"""
+    # p値が 0.05〜0.10 程度になる弱い相関ペアを合成する（seed/係数を固定）。
+    rng = np.random.default_rng(60)
+    n = 60
+    x = rng.normal(0, 1, n)
+    # わずかに相関させ、p を 0.05 近傍（≈0.064）に乗せる。
+    y = 0.27 * x + rng.normal(0, 1, n)
+    small = pd.DataFrame({"x": x, "y": y})
+    cfg = AnalysisConfig(method="correlation", explanatory=["x", "y"])
+    res05, _ = run_analysis(cfg, small)
+    p = res05.tables["pairs"][0]["p_value"]
+    if not (0.05 <= p < 0.10):
+        pytest.skip(f"合成データの p={p:.3f} が 0.05〜0.10 の範囲外（環境差）")
+    cfg10 = AnalysisConfig(method="correlation", explanatory=["x", "y"],
+                           options={"alpha": 0.10})
+    res10, _ = run_analysis(cfg10, small)
+    m05 = next(m for m in res05.summary_metrics if m.key == "strongest_r")
+    m10 = next(m for m in res10.summary_metrics if m.key == "strongest_r")
+    assert m05.significant is False
+    assert m10.significant is True
+
+
+def test_anova_posthoc_disabled(df):
+    """options.posthoc=False で posthoc テーブルが空になる（個別手法編 5）。"""
+    cfg = AnalysisConfig(method="anova", target="sales",
+                         options={"group": "group", "posthoc": False})
+    res, _ = run_analysis(cfg, df)
+    assert res.tables["posthoc"] == []
+
+
+def test_anova_posthoc_enabled_by_default(df):
+    """posthoc 既定（True）では全体が有意なとき posthoc が生成される（非回帰）。"""
+    cfg = AnalysisConfig(method="anova", target="sales", options={"group": "group"})
+    res, _ = run_analysis(cfg, df)
+    p = next(m for m in res.summary_metrics if m.key == "p_value")
+    if p.significant:
+        assert res.tables["posthoc"]
+
+
 def test_charts_render_japanese_without_missing_glyph(tmp_path):
     """日本語ラベルのグラフでフォント欠落(豆腐)が起きないこと。"""
     import warnings

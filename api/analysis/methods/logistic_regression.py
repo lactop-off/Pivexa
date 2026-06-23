@@ -59,6 +59,7 @@ class LogisticRegression(AnalysisMethod):
         import statsmodels.api as sm
         from sklearn.metrics import roc_auc_score, roc_curve
 
+        alpha = float(config.options.get("alpha", 0.05))
         target = config.target
         cols = config.explanatory
         sub = df[[target] + cols].dropna()
@@ -168,7 +169,8 @@ class LogisticRegression(AnalysisMethod):
 
         return AnalysisResult(
             method=self.name, summary_metrics=metrics, coefficients=coefs,
-            charts=chart_refs, tables={"confusion_matrix": cm, "positive_label": str(positive)},
+            charts=chart_refs,
+            tables={"confusion_matrix": cm, "positive_label": str(positive), "alpha": alpha},
             sample_size=len(sub), warnings=warnings,
         )
 
@@ -176,6 +178,7 @@ class LogisticRegression(AnalysisMethod):
         if not result.summary_metrics:
             return Interpretation(sentences=[InterpretSentence(level="caution", text=" / ".join(result.warnings))])
         sentences: list[InterpretSentence] = []
+        alpha = float(result.tables.get("alpha", 0.05))
         positive = result.tables.get("positive_label")
         if positive is not None:
             sentences.append(InterpretSentence(
@@ -199,8 +202,8 @@ class LogisticRegression(AnalysisMethod):
         for c in result.coefficients:
             if c.p_value is None:
                 continue
-            sentences.append(significance_sentence(c.variable, c.p_value))
-            if c.p_value < 0.05:
+            sentences.append(significance_sentence(c.variable, c.p_value, alpha=alpha))
+            if c.p_value < alpha:
                 orr = c.extra.get("odds_ratio")
                 if orr:
                     sentences.append(InterpretSentence(

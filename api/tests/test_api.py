@@ -156,6 +156,129 @@ def test_upload_rejects_garbage(client):
     assert r.status_code == 400
 
 
+# --- データセット単体取得 / 削除（基本設計§6）------------------------------
+def test_get_dataset_meta(client):
+    """アップロード→単体GETでメタが取れる。存在しないIDは404。"""
+    _login(client)
+    up = client.post("/datasets", files={"file": ("meta.csv", _make_csv(), "text/csv")})
+    assert up.status_code == 201, up.text
+    dataset_id = up.json()["id"]
+
+    r = client.get(f"/datasets/{dataset_id}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == dataset_id
+    assert body["format"] == "csv"
+    assert body["row_count"] == 40
+    assert body["col_count"] == 2
+    assert "created_at" in body
+
+    # 存在しないIDは404
+    missing = client.get("/datasets/999999")
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "データセットが見つかりません。"
+
+
+def test_delete_dataset(client):
+    """アップロード→DELETE→200。以後 単体GET/プロファイル/一覧から消える。"""
+    _login(client)
+    up = client.post("/datasets", files={"file": ("del.csv", _make_csv(), "text/csv")})
+    assert up.status_code == 201, up.text
+    dataset_id = up.json()["id"]
+
+    # 削除前は取得・プロファイル・一覧に存在する
+    assert client.get(f"/datasets/{dataset_id}").status_code == 200
+    assert client.get(f"/datasets/{dataset_id}/profile").status_code == 200
+    assert any(d["id"] == dataset_id for d in client.get("/datasets").json())
+
+    # 削除
+    dele = client.delete(f"/datasets/{dataset_id}")
+    assert dele.status_code == 200, dele.text
+    assert dele.json() == {"ok": True}
+
+    # 削除後は単体GET・プロファイルが404、一覧からも消える
+    assert client.get(f"/datasets/{dataset_id}").status_code == 404
+    assert client.get(f"/datasets/{dataset_id}/profile").status_code == 404
+    assert all(d["id"] != dataset_id for d in client.get("/datasets").json())
+
+
+def test_delete_dataset_cascades_jobs_and_results(client):
+    """関連ジョブ・結果ごと連鎖削除される（FK ON DELETE CASCADE）。
+
+    同期解析(descriptive)でジョブ・結果まで作ってからデータセットを削除し、
+    ジョブ取得・結果取得が 404 になることを確認する。
+    """
+    _login(client)
+    up = client.post("/datasets", files={"file": ("cascade.csv", _make_csv(), "text/csv")})
+    dataset_id = up.json()["id"]
+
+    job = client.post(
+        "/jobs",
+        json={
+            "dataset_id": dataset_id,
+            "method": "descriptive",
+            "config": {"explanatory": ["ad_cost", "sales"]},
+        },
+    )
+    assert job.status_code == 200, job.text
+    jb = job.json()
+    job_id = jb["job_id"]
+    result_id = jb["result_id"]
+    assert result_id is not None
+
+    # データセット削除でジョブ・結果まで連鎖削除される
+    assert client.delete(f"/datasets/{dataset_id}").status_code == 200
+    assert client.get(f"/jobs/{job_id}").status_code == 404
+    assert client.get(f"/results/{result_id}").status_code == 404
+
+
+def test_delete_dataset_unknown(client):
+    """存在しないIDの DELETE は404。"""
+    _login(client)
+    r = client.delete("/datasets/999999")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "データセットが見つかりません。"
+
+
+def test_non_owner_viewer_cannot_delete_dataset(client):
+    """所有者でも管理者でもない viewer は他人のデータセットを削除できない(403)。"""
+    _login(client)  # admin
+    up = client.post("/datasets", files={"file": ("owned.csv", _make_csv(), "text/csv")})
+    dataset_id = up.json()["id"]
+    # admin が viewer を作成
+    client.post(
+        "/users",
+        json={"username": "viewer_del", "password": "pw-987654", "role": "viewer"},
+    )
+    # viewer でログインして admin 所有のデータセット削除を試みる → 403
+    _login(client, username="viewer_del", password="pw-987654")
+    r = client.delete(f"/datasets/{dataset_id}")
+    assert r.status_code == 403
+
+
+def test_delete_dataset_audit_logged(client):
+    """削除時に監査ログ delete_dataset が記録される。"""
+    from db.models import AuditLog
+    from db.session import SessionLocal
+
+    _login(client)
+    up = client.post("/datasets", files={"file": ("audit-del.csv", _make_csv(), "text/csv")})
+    dataset_id = up.json()["id"]
+
+    assert client.delete(f"/datasets/{dataset_id}").status_code == 200
+
+    db = SessionLocal()
+    try:
+        log = (
+            db.query(AuditLog)
+            .filter(AuditLog.action == "delete_dataset", AuditLog.target == str(dataset_id))
+            .first()
+        )
+        assert log is not None
+    finally:
+        db.close()
+
+
 # --- 手法一覧 ---------------------------------------------------------------
 def test_methods_listing(client):
     _login(client)

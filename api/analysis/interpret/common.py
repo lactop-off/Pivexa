@@ -9,13 +9,18 @@ from ..schema import InterpretSentence
 P_SIGNIFICANT = 0.05
 
 
-def significance_sentence(var: str, p: float) -> InterpretSentence:
-    if p < 0.01:
+def significance_sentence(var: str, p: float, alpha: float = 0.05) -> InterpretSentence:
+    """有意性の定型文を返す（個別手法編 0 共通事項）。
+
+    判定の境界には呼び出し側の有意水準 alpha を用いる（既定 0.05 で後方互換）。
+    「強く有意」の閾値は alpha の 1/5（既定 0.01）として alpha に追従させる。
+    """
+    if p < alpha / 5:
         return InterpretSentence(
             level="highlight",
             text=f"「{var}」は統計的に強く有意です（p={p:.3f}）。偶然とは考えにくい関係があります。",
         )
-    if p < P_SIGNIFICANT:
+    if p < alpha:
         return InterpretSentence(
             level="highlight",
             text=f"「{var}」は統計的に有意です（p={p:.3f}）。",
