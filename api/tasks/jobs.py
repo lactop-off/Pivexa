@@ -9,6 +9,7 @@ import pandas as pd
 from analysis import charts
 from analysis.runner import run_analysis
 from analysis.schema import AnalysisConfig
+from core.dataset import profiling
 from db.models import AnalysisJob, AnalysisResultRow, Dataset, Preprocessing
 from db.session import SessionLocal
 
@@ -64,9 +65,13 @@ def execute_job(job_id: int) -> int:
 
 
 def _read_dataset(dataset) -> pd.DataFrame:
-    if dataset.format == "excel":
-        return pd.read_excel(dataset.file_path)
-    return pd.read_csv(dataset.file_path)
+    # アップロード時と同じ堅牢な読み込み（エンコーディング/区切りの自動判定）を使う。
+    # 素の pd.read_csv は utf-8/カンマ固定のため、Shift-JIS や TSV では
+    # 「アップロードは成功するのに解析だけ UnicodeDecodeError で落ちる」原因になる。
+    with open(dataset.file_path, "rb") as f:
+        content = f.read()
+    df, _ = profiling.read_table(content, dataset.original_name or dataset.file_path)
+    return df
 
 
 def _user_message(e: Exception) -> str:

@@ -10,6 +10,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# matplotlib のフォントキャッシュをビルド時に生成しておく。
+# これを省くと、ワーカーでの初回チャート描画時にフォントスキャン（約40秒）が走り、
+# 「最初の解析だけ極端に遅い／ハングして見える」原因になる。
+RUN python -c "import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt; plt.plot([0, 1]); plt.savefig('/tmp/_warm.png')" \
+    && rm -f /tmp/_warm.png
+
 COPY . .
 
 EXPOSE 8000

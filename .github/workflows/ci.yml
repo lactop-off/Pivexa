@@ -6,12 +6,27 @@ on:
   pull_request:
 
 jobs:
+  # --- バックエンド: 解析ユニット + API統合テスト（実Postgres） ---------------
   backend:
     name: Backend (pytest)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: api
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pivexa
+          POSTGRES_PASSWORD: pivexa
+          POSTGRES_DB: pivexa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pivexa"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg2://pivexa:pivexa@localhost:5432/pivexa
     steps:
       - uses: actions/checkout@v4
 
@@ -19,7 +34,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: api/requirements.txt
+          cache-dependency-path: api/requirements-dev.txt
 
       - name: Install system libraries (WeasyPrint)
         run: |
@@ -31,13 +46,14 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
-      - name: Run tests
+      - name: Run tests (unit + API integration)
         run: pytest tests -q
 
+  # --- フロント: ビルド + Vitest 単体テスト -----------------------------------
   frontend:
-    name: Frontend (build)
+    name: Frontend (build + unit)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -54,5 +70,70 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Unit tests (Vitest)
+        run: npm run test
+
       - name: Build
         run: npm run build
+
+  # --- E2E: docker compose 実起動 + API一気通貫（同期/非同期ワーカー） ---------
+  e2e-smoke:
+    name: E2E smoke (docker compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run docker E2E smoke
+        run: bash scripts/e2e_smoke.sh
+
+  # --- E2E: Playwright によるブラウザ実機テスト -------------------------------
+  e2e-browser:
+    name: E2E browser (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate .env
+        run: |
+          sed -e 's|^JWT_SECRET=.*|JWT_SECRET=pw-ci-secret|' \
+              -e 's|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=e2e-admin-pass|' \
+              .env.example > .env
+
+      - name: Start stack
+        run: docker compose up -d --build
+
+      - name: Wait for API health
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/api/health && exit 0
+            sleep 2
+          done
+          docker compose logs --tail=80
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright
+        working-directory: frontend
+        env:
+          E2E_ADMIN_PASSWORD: e2e-admin-pass
+        run: npm run test:e2e
+
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose logs --tail=120
+
+      - name: Teardown
+        if: always()
+        run: docker compose down -v

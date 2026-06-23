@@ -105,3 +105,28 @@ def test_validate_catches_bad_config(df):
     profile = DatasetProfile.from_dataframe(df)
     vr = method.validate(AnalysisConfig(method="correlation", explanatory=["ad_cost"]), profile)
     assert vr.has_error
+
+
+def test_charts_render_japanese_without_missing_glyph(tmp_path):
+    """日本語ラベルのグラフでフォント欠落(豆腐)が起きないこと。"""
+    import warnings
+
+    from matplotlib import font_manager
+
+    from analysis import charts
+
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    if not any(n in available for n in charts._CJK_FONT_CANDIDATES):
+        pytest.skip("CJK フォント未導入のためスキップ")
+
+    charts.set_output_dir(str(tmp_path))
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            ref = charts.histogram(pd.Series([1.0, 2, 3, 4, 5]), "売上の分布")
+    finally:
+        charts.set_output_dir(None)
+
+    assert ref is not None
+    missing = [w for w in caught if "missing from font" in str(w.message)]
+    assert not missing, f"日本語グリフが欠落しています: {[str(w.message) for w in missing]}"

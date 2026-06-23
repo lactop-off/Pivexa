@@ -6,16 +6,24 @@ services:
       - "8080:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    # api/frontend が起動済みでないと upstream を解決できずクラッシュするため待つ
     depends_on:
-      - api
-      - frontend
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_started
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # NEXT_PUBLIC_* はビルド時にバンドルへ埋め込まれるため build args で渡す
+        NEXT_PUBLIC_API_BASE: /api
     environment:
       - NEXT_PUBLIC_API_BASE=/api
     depends_on:
-      - api
+      api:
+        condition: service_started
 
   api:
     build: ./api
@@ -30,9 +38,19 @@ services:
     volumes:
       - uploads:/data/uploads
       - reports:/data/reports
+    # DB/Redis が接続を受け付けられる状態になるまで待ってから起動する
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # nginx が upstream として待てるよう /health で死活監視する
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
 
   worker:
     build: ./api
@@ -47,8 +65,10 @@ services:
       - uploads:/data/uploads
       - reports:/data/reports
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   db:
     image: postgres:16-alpine
@@ -58,9 +78,20 @@ services:
       - POSTGRES_DB=pivexa
     volumes:
       - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pivexa -d pivexa"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
 
 volumes:
   db-data:

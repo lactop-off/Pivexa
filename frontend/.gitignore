@@ -1,0 +1,5 @@
+# テスト生成物
+/playwright-report/
+/test-results/
+/coverage/
+/.playwright/
