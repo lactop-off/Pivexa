@@ -38,10 +38,37 @@ def _save(fig, path: str) -> None:
     plt.close(fig)
 
 
+# 日本語が豆腐(□)にならないよう、利用可能な CJK フォントを優先採用する。
+_CJK_FONT_CANDIDATES = (
+    "Noto Sans CJK JP", "Noto Sans CJK", "IPAexGothic", "IPAGothic",
+    "TakaoPGothic", "VL PGothic", "Yu Gothic", "Hiragino Sans", "MS Gothic",
+)
+_FONTS_CONFIGURED = False
+
+
+def _configure_fonts() -> None:
+    """初回のみ、CJK 対応フォントを matplotlib に設定する。"""
+    global _FONTS_CONFIGURED
+    if _FONTS_CONFIGURED:
+        return
+    import matplotlib
+    from matplotlib import font_manager
+
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    for name in _CJK_FONT_CANDIDATES:
+        if name in available:
+            matplotlib.rcParams["font.family"] = name
+            break
+    # CJK フォントは U+2212(MINUS SIGN) を欠くことがあるため ASCII ハイフンを使う。
+    matplotlib.rcParams["axes.unicode_minus"] = False
+    _FONTS_CONFIGURED = True
+
+
 def _new_fig():
     import matplotlib
 
     matplotlib.use("Agg")
+    _configure_fonts()
     import matplotlib.pyplot as plt
 
     return plt.subplots(figsize=(6, 4))

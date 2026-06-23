@@ -226,3 +226,34 @@ def test_job_unknown_dataset(client):
         json={"dataset_id": 999999, "method": "descriptive", "config": {"explanatory": ["ad_cost"]}},
     )
     assert job.status_code == 404
+
+
+def test_shiftjis_csv_uploads_and_analyzes(client):
+    """Shift-JIS の日本語ヘッダCSVが、アップロードだけでなく解析まで通ること。
+
+    旧実装ではアップロードは成功するのに解析(_read_dataset)で UnicodeDecodeError
+    になっていた。アップロード時と同じ自動エンコーディング判定を使うことで解消。
+    """
+    _login(client)
+    rows = ["売上,広告費"] + [f"{100 + i * 2},{50 + i}" for i in range(40)]
+    content = ("\n".join(rows) + "\n").encode("cp932")  # Shift-JIS
+
+    up = client.post("/datasets", files={"file": ("sjis.csv", content, "text/csv")})
+    assert up.status_code == 201, up.text
+    dataset_id = up.json()["id"]
+
+    # 列名(日本語)が正しく取り込まれている
+    prof = client.get(f"/datasets/{dataset_id}/profile")
+    assert {"売上", "広告費"} <= {c["name"] for c in prof.json()["columns"]}
+
+    # 同期解析(descriptive)が UnicodeDecodeError にならず done になる
+    job = client.post(
+        "/jobs",
+        json={
+            "dataset_id": dataset_id,
+            "method": "descriptive",
+            "config": {"explanatory": ["売上", "広告費"]},
+        },
+    )
+    assert job.status_code == 200, job.text
+    assert job.json()["status"] == "done"
