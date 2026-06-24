@@ -123,6 +123,70 @@ def bar(labels: list[str], values: list[float], label: str, errors: list[float] 
     return ChartRef(kind="bar", label=label, path=path)
 
 
+def confusion_matrix_chart(matrix, labels: list[str], label: str) -> ChartRef | None:
+    """混同行列のヒートマップ（個別手法編 8）。
+
+    matrix は [実測][予測] の2x2（行=実測, 列=予測）の件数。各セルに件数を
+    注記し、軸に予測（横）/実測（縦）のラベルを付ける。
+    """
+    if not _enabled():
+        return None
+    import numpy as np
+
+    mat = np.asarray(matrix, dtype=float)
+    fig, ax = _new_fig()
+    im = ax.imshow(mat, cmap="Blues")
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels)
+    ax.set_yticks(range(len(labels)))
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("予測")
+    ax.set_ylabel("実測")
+    # セルに件数を注記。背景が濃い箇所は白字にして可読性を確保する。
+    vmax = mat.max() if mat.size else 0.0
+    for i in range(mat.shape[0]):
+        for j in range(mat.shape[1]):
+            color = "white" if mat[i, j] > vmax / 2 else "black"
+            ax.text(j, i, f"{int(round(mat[i, j]))}", ha="center", va="center", color=color)
+    fig.colorbar(im, ax=ax)
+    ax.set_title(label)
+    path = _new_path("confusion")
+    _save(fig, path)
+    return ChartRef(kind="confusion", label=label, path=path)
+
+
+def grouped_bar(
+    categories: list[str],
+    series: dict[str, list[float]],
+    label: str,
+    legend_title: str | None = None,
+) -> ChartRef | None:
+    """グループ化棒グラフ（個別手法編 3/8）。
+
+    categories は横軸の主カテゴリ、series は {系列名: 値リスト} で各系列が
+    categories と同じ長さの値を持つ。クロス集計表のカテゴリ別件数の可視化に使う。
+    """
+    if not _enabled():
+        return None
+    import numpy as np
+
+    fig, ax = _new_fig()
+    n_series = len(series) or 1
+    x = np.arange(len(categories))
+    width = 0.8 / n_series
+    for i, (name, values) in enumerate(series.items()):
+        offset = (i - (n_series - 1) / 2) * width
+        ax.bar(x + offset, values, width=width, label=str(name))
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories, rotation=45, ha="right")
+    if len(series) > 1:
+        ax.legend(title=legend_title)
+    ax.set_title(label)
+    path = _new_path("bar")
+    _save(fig, path)
+    return ChartRef(kind="bar", label=label, path=path)
+
+
 def roc_curve_chart(fpr, tpr, label: str) -> ChartRef | None:
     if not _enabled():
         return None

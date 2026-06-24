@@ -1,6 +1,7 @@
 """FastAPI アプリ（詳細設計書 共通基盤編 7 の API I/O に対応）。"""
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ from core.report import generator
 from db.models import (
     AnalysisJob,
     AnalysisResultRow,
+    AuditLog,
     Dataset,
     DatasetColumn,
     Preprocessing,
@@ -83,6 +85,27 @@ def _ensure_admin() -> None:
         db.close()
 
 
+# --- 監査ログ（要件§6.1 / 基本設計§7）-------------------------------------
+def _audit(db: Session, user_id: int | None, action: str, target: str | None = None) -> None:
+    """主要操作の監査ログを 1 行追加する（ベストエフォート）。
+
+    監査の失敗（DB 例外等）が本処理を巻き込まないよう、例外は握りつぶす。
+    呼び出し側のトランザクション状態を汚さないよう、失敗時は rollback する。
+    """
+    try:
+        db.add(AuditLog(user_id=user_id, action=action, target=target))
+        db.commit()
+    except Exception:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        # 監査は要件§6.1 の機能要件。全損が無音だと気づけないため痕跡を残す。
+        logging.getLogger("pivexa.audit").warning(
+            "監査ログの記録に失敗しました: action=%s target=%s", action, target,
+        )
+
+
 # --- 認証 -------------------------------------------------------------------
 def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     token = request.cookies.get("access_token")
@@ -94,6 +117,14 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = db.query(User).filter(User.username == payload["sub"]).first()
     if not user:
         raise HTTPException(status_code=401, detail="ユーザーが存在しません。")
+    return user
+
+
+# --- ロールベース認可（要件§6.2）------------------------------------------
+def require_admin(user: User = Depends(current_user)) -> User:
+    """管理操作向け。ログイン済みかつ role=="admin" を要求する。"""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="管理者権限が必要です。")
     return user
 
 
@@ -109,6 +140,7 @@ def login(body: LoginReq, response: Response, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="ユーザー名またはパスワードが違います。")
     token = create_access_token(user.username, user.role)
     response.set_cookie("access_token", token, httponly=True, samesite="lax")
+    _audit(db, user.id, "login", str(user.id))
     return {"user": {"id": user.id, "username": user.username, "role": user.role}}
 
 
@@ -159,6 +191,7 @@ async def upload_dataset(
             missing_count=col["missing"], summary={**col["summary"], "recommendation": col["recommendation"]},
         ))
     db.commit()
+    _audit(db, user.id, "upload_dataset", str(ds.id))
     return {"id": ds.id, "name": ds.name, "format": fmt, "row_count": len(df), "col_count": df.shape[1]}
 
 
@@ -246,6 +279,7 @@ def create_job(body: JobReq, db: Session = Depends(get_db), user: User = Depends
     db.add(job)
     db.commit()
     db.refresh(job)
+    _audit(db, user.id, "create_job", str(job.id))
 
     # 同期実行の閾値判定
     if (dataset.row_count or 0) <= SYNC_ROW_THRESHOLD and body.method in SYNC_METHODS:
@@ -297,6 +331,12 @@ def create_report(
     db: Session = Depends(get_db),
     user: User = Depends(current_user),
 ):
+    # レポート形式の検証（要件§5.4）。対応は pdf のみ。
+    # （フルレポートの PNG 化は WeasyPrint 63 で非対応。画像出力はフロント側で
+    #   各グラフ PNG を個別 DL する方針のため、ここでは pdf 以外を弾く。）
+    if body.format != "pdf":
+        raise HTTPException(status_code=400, detail="未対応のレポート形式です（pdf のみ対応）。")
+
     row = db.get(AnalysisResultRow, result_id)
     if not row:
         raise HTTPException(status_code=404, detail="結果が見つかりません。")
@@ -324,6 +364,7 @@ def create_report(
     db.add(rep)
     db.commit()
     db.refresh(rep)
+    _audit(db, user.id, "create_report", str(rep.id))
     return {"report_id": rep.id, "format": "pdf"}
 
 
@@ -340,7 +381,9 @@ def download_report(report_id: int, db: Session = Depends(get_db), user: User = 
 def get_chart(name: str, user: User = Depends(current_user)):
     safe = os.path.basename(name)  # パストラバーサル対策
     path = os.path.join(REPORTS_DIR, safe)
-    if not os.path.exists(path):
+    # safe が空（末尾スラッシュ等）だと REPORTS_DIR 自体に解決され、存在判定を
+    # すり抜けてディレクトリを開こうとし 500 になる。isfile で確実に弾く。
+    if not safe or not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="画像が見つかりません。")
     return FileResponse(path, media_type="image/png")
 
@@ -352,30 +395,39 @@ def me(user: User = Depends(current_user)):
 
 
 # --- ユーザー管理（管理者）--------------------------------------------------
+_ALLOWED_ROLES = {"admin", "viewer"}
+
+
 class UserReq(BaseModel):
     username: str
     password: str
+    # 既定は admin（MVP は管理者のみ）。admin が viewer を作れるようにし、
+    # require_admin による認可が実際に意味を持つようにする。
+    role: str = "admin"
 
 
 @app.get("/users")
-def list_users(db: Session = Depends(get_db), user: User = Depends(current_user)):
+def list_users(db: Session = Depends(get_db), user: User = Depends(require_admin)):
     rows = db.query(User).order_by(User.created_at.asc()).all()
     return [{"id": u.id, "username": u.username, "role": u.role} for u in rows]
 
 
 @app.post("/users", status_code=201)
-def create_user(body: UserReq, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def create_user(body: UserReq, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    if body.role not in _ALLOWED_ROLES:
+        raise HTTPException(status_code=422, detail="role は admin または viewer を指定してください。")
     if db.query(User).filter(User.username == body.username).first():
         raise HTTPException(status_code=409, detail="同名のユーザーが既に存在します。")
-    u = User(username=body.username, password_hash=hash_password(body.password), role="admin")
+    u = User(username=body.username, password_hash=hash_password(body.password), role=body.role)
     db.add(u)
     db.commit()
     db.refresh(u)
+    _audit(db, user.id, "create_user", str(u.id))
     return {"id": u.id, "username": u.username, "role": u.role}
 
 
 @app.delete("/users/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+def delete_user(user_id: int, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     if db.query(User).count() <= 1:
         raise HTTPException(status_code=400, detail="最後のユーザーは削除できません。")
     target = db.get(User, user_id)
@@ -383,4 +435,5 @@ def delete_user(user_id: int, db: Session = Depends(get_db), user: User = Depend
         raise HTTPException(status_code=404, detail="ユーザーが見つかりません。")
     db.delete(target)
     db.commit()
+    _audit(db, user.id, "delete_user", str(user_id))
     return {"ok": True}

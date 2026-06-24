@@ -53,8 +53,15 @@ class TTest(AnalysisMethod):
         issues: list[Issue] = []
         if not config.target:
             issues.append(Issue(level="error", message="対象変数を選択してください。"))
-        if not config.options.get("group"):
+        elif dataset.columns.get(config.target) not in (None, "numeric"):
+            # 対象変数の型は profile で判定可能。数値以外はエラー。
+            issues.append(Issue(level="error", message="対象変数には数値の列を選択してください。"))
+        group = config.options.get("group")
+        if not group:
             issues.append(Issue(level="error", message="グループ列を選択してください。"))
+        elif group == config.target:
+            issues.append(Issue(level="error", message="対象変数とグループ列には別の列を選んでください。"))
+        # 群がちょうど2水準か・各群 n>=2 はデータ依存のため run でガードする。
         return ValidationResult(ok=not any(i.level == "error" for i in issues), issues=issues)
 
     def run(self, config: AnalysisConfig, df: pd.DataFrame) -> AnalysisResult:
@@ -72,6 +79,13 @@ class TTest(AnalysisMethod):
             )
         a = sub[sub[group] == levels[0]][target]
         b = sub[sub[group] == levels[1]][target]
+
+        # 各群 n>=2 はデータ依存（profile では群サイズ不明）のため run でガードする。
+        if len(a) < 2 or len(b) < 2:
+            return AnalysisResult(
+                method=self.name, sample_size=len(sub),
+                warnings=[f"各群に2件以上必要です（{levels[0]}={len(a)}件, {levels[1]}={len(b)}件）。"],
+            )
 
         if paired:
             n = min(len(a), len(b))

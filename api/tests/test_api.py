@@ -257,3 +257,128 @@ def test_shiftjis_csv_uploads_and_analyzes(client):
     )
     assert job.status_code == 200, job.text
     assert job.json()["status"] == "done"
+
+
+# --- 監査ログ（要件§6.1）---------------------------------------------------
+def _audit_count() -> int:
+    """テスト用DBセッションで AuditLog の件数を直接数える。"""
+    from db.models import AuditLog
+    from db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        return db.query(AuditLog).count()
+    finally:
+        db.close()
+
+
+def test_audit_log_on_login(client):
+    before = _audit_count()
+    r = _login(client)
+    assert r.status_code == 200
+    # ログイン成功で監査ログが 1 行以上増える
+    assert _audit_count() > before
+
+
+def test_audit_log_on_upload(client):
+    _login(client)
+    before = _audit_count()
+    up = client.post("/datasets", files={"file": ("audit.csv", _make_csv(), "text/csv")})
+    assert up.status_code == 201, up.text
+    # アップロード成功で監査ログが増える
+    assert _audit_count() > before
+
+
+# --- レポート形式の検証（要件§5.4）----------------------------------------
+def test_report_rejects_unsupported_format(client):
+    _login(client)
+    up = client.post("/datasets", files={"file": ("fmt.csv", _make_csv(), "text/csv")})
+    dataset_id = up.json()["id"]
+    job = client.post(
+        "/jobs",
+        json={
+            "dataset_id": dataset_id,
+            "method": "descriptive",
+            "config": {"explanatory": ["ad_cost", "sales"]},
+        },
+    )
+    result_id = job.json()["result_id"]
+
+    # csv は未対応 → 400（PDF 生成に到達せず弾く）
+    rep = client.post(f"/results/{result_id}/report", json={"format": "csv"})
+    assert rep.status_code == 400, rep.text
+    assert "未対応" in rep.json()["detail"]
+
+
+def test_report_accepts_pdf_format(client):
+    _login(client)
+    up = client.post("/datasets", files={"file": ("fmt2.csv", _make_csv(), "text/csv")})
+    dataset_id = up.json()["id"]
+    job = client.post(
+        "/jobs",
+        json={
+            "dataset_id": dataset_id,
+            "method": "descriptive",
+            "config": {"explanatory": ["ad_cost", "sales"]},
+        },
+    )
+    result_id = job.json()["result_id"]
+
+    # pdf は従来どおり成功（WeasyPrint 不在環境では 500 になるため skip）
+    rep = client.post(f"/results/{result_id}/report", json={"format": "pdf"})
+    if rep.status_code == 500:
+        pytest.skip("WeasyPrint が利用できないためレポート生成テストをスキップ")
+    assert rep.status_code == 201, rep.text
+    assert rep.json()["format"] == "pdf"
+
+
+# --- ロールベース認可（要件§6.2）------------------------------------------
+def test_admin_can_create_user(client):
+    """admin ロールは管理操作(POST /users)を実行できる。"""
+    _login(client)  # 既定の admin でログイン
+    r = client.post("/users", json={"username": "member1", "password": "pw-123456"})
+    assert r.status_code == 201, r.text
+    assert r.json()["username"] == "member1"
+
+
+def test_admin_creates_viewer_via_api(client):
+    """admin は role=viewer を指定して非管理ユーザーを作成でき、その viewer は
+    管理操作で 403 になる（require_admin が実効的に機能する）。"""
+    _login(client)  # admin
+    r = client.post(
+        "/users",
+        json={"username": "viewer_api", "password": "pw-654321", "role": "viewer"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["role"] == "viewer"
+
+    login = _login(client, username="viewer_api", password="pw-654321")
+    assert login.status_code == 200, login.text
+    blocked = client.post("/users", json={"username": "x", "password": "pw-000000"})
+    assert blocked.status_code == 403
+
+
+def test_viewer_cannot_create_user(client):
+    """role=="viewer" のユーザーは管理操作で 403 になる。"""
+    from core.auth.security import hash_password
+    from db.models import User
+    from db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        if not db.query(User).filter(User.username == "viewer1").first():
+            db.add(User(
+                username="viewer1",
+                password_hash=hash_password("pw-viewer-1"),
+                role="viewer",
+            ))
+            db.commit()
+    finally:
+        db.close()
+
+    login = _login(client, username="viewer1", password="pw-viewer-1")
+    assert login.status_code == 200, login.text
+
+    r = client.post("/users", json={"username": "member2", "password": "pw-123456"})
+    assert r.status_code == 403, r.text
+    assert "管理者権限" in r.json()["detail"]

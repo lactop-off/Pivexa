@@ -48,6 +48,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      # マイグレーションは本番起動でしか走らず、テストは create_all でスキーマを
+      # 作るため、移行のバグが緑をすり抜ける。新マイグレーションの upgrade/
+      # downgrade をクリーンDBで実際に往復させて検証する。
+      - name: Migration smoke (alembic up/down/up)
+        run: |
+          alembic upgrade head
+          alembic downgrade -1
+          alembic upgrade head
+
       - name: Run tests (unit + API integration)
         run: pytest tests -q
 

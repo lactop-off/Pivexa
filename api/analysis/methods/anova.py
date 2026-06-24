@@ -45,8 +45,14 @@ class Anova(AnalysisMethod):
         issues: list[Issue] = []
         if not config.target:
             issues.append(Issue(level="error", message="対象変数を選択してください。"))
-        if not config.options.get("group"):
+        elif dataset.columns.get(config.target) not in (None, "numeric"):
+            issues.append(Issue(level="error", message="対象変数には数値の列を選択してください。"))
+        group = config.options.get("group")
+        if not group:
             issues.append(Issue(level="error", message="グループ列を選択してください。"))
+        elif group == config.target:
+            issues.append(Issue(level="error", message="対象変数とグループ列には別の列を選んでください。"))
+        # 群が3水準以上か・各群 n>=2 はデータ依存のため run でガードする。
         return ValidationResult(ok=not any(i.level == "error" for i in issues), issues=issues)
 
     def run(self, config: AnalysisConfig, df: pd.DataFrame) -> AnalysisResult:
@@ -58,6 +64,21 @@ class Anova(AnalysisMethod):
         group = config.options["group"]
         sub = df[[target, group]].dropna().rename(columns={target: "y", group: "g"})
         sub["g"] = sub["g"].astype(str)
+
+        # データ依存の前提検査（個別手法編 5）。profile は群数・群サイズを持たないため
+        # ここでガードし、クラッシュさせず明確なエラーを返す。
+        counts = sub["g"].value_counts()
+        if len(counts) < 3:
+            return AnalysisResult(
+                method=self.name, sample_size=len(sub),
+                warnings=[f"分散分析にはグループが3水準以上必要です（現在{len(counts)}水準）。2群なら t検定をご利用ください。"],
+            )
+        small = [g for g, c in counts.items() if c < 2]
+        if small:
+            return AnalysisResult(
+                method=self.name, sample_size=len(sub),
+                warnings=[f"各群に2件以上必要ですが、件数が不足する群があります（{', '.join(map(str, small))}）。"],
+            )
 
         model = ols("y ~ C(g)", data=sub).fit()
         table = sm.stats.anova_lm(model, typ=1)
@@ -96,6 +117,10 @@ class Anova(AnalysisMethod):
         )
 
     def interpret(self, result: AnalysisResult) -> Interpretation:
+        if not result.summary_metrics:
+            return Interpretation(sentences=[
+                InterpretSentence(level="caution", text=" / ".join(result.warnings))
+            ])
         m = {x.key: x for x in result.summary_metrics}
         p = float(m["p_value"].value)
         sentences: list[InterpretSentence] = []

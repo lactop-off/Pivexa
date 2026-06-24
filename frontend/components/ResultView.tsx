@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { api, ApiError, type AnalysisResult, type Interpretation } from "../lib/api";
+import { api, ApiError, type AnalysisResult, type ChartRef, type Interpretation } from "../lib/api";
 
 export function ResultView({
   result,
@@ -127,7 +127,19 @@ export function ResultView({
             <h2 style={{ marginTop: 20 }}>グラフ</h2>
             {result.charts.map((ch, i) => (
               <div key={i}>
-                <p className="muted">{ch.label}</p>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <p className="muted" style={{ margin: 0 }}>
+                    {ch.label}
+                  </p>
+                  <a
+                    className="no-print"
+                    style={{ fontSize: 13 }}
+                    href={api.chartUrl(ch.path)}
+                    download={chartFileName(ch)}
+                  >
+                    PNG保存
+                  </a>
+                </div>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img className="chart" src={api.chartUrl(ch.path)} alt={ch.label} />
               </div>
@@ -162,6 +174,23 @@ export function ResultView({
 function fmt(v: number | null): string {
   if (v === null || v === undefined) return "—";
   return Number.isInteger(v) ? String(v) : v.toFixed(4);
+}
+
+// PNG保存時のファイル名。ラベル(日本語可)から記号類を除いて拡張子.pngを付ける。
+// ラベルが空なら kind、それも無ければ配信パスの末尾を既定名にする。
+function chartFileName(ch: ChartRef): string {
+  const base =
+    sanitize(ch.label) || sanitize(ch.kind) || (ch.path.split("/").pop() ?? "chart");
+  const name = base || "chart";
+  return name.toLowerCase().endsWith(".png") ? name : `${name}.png`;
+}
+
+function sanitize(s: string): string {
+  // パス区切りや禁止文字を除去し、空白を _ に。
+  return s
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "")
+    .replace(/\s+/g, "_");
 }
 
 function extra(e: Record<string, number>): string {

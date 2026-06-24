@@ -58,6 +58,16 @@ class LinearRegression(AnalysisMethod):
             issues.append(Issue(level="error", message="説明変数を1つ以上選択してください。"))
         if dataset.n_rows < self.min_rows:
             issues.append(Issue(level="error", message="重回帰には10件以上を推奨します。"))
+        # 行数は説明変数の数を上回る必要がある（自由度の確保）。profile で判定可能。
+        # 定数項を含めるため n_params = 説明変数の数 + 1 として比較する。
+        if config.explanatory and dataset.n_rows <= len(config.explanatory) + 1:
+            issues.append(Issue(
+                level="error",
+                message=f"行数（{dataset.n_rows}）が説明変数の数に対して不足しています。説明変数より十分多い行数が必要です。",
+            ))
+        if config.target and config.target in config.explanatory:
+            issues.append(Issue(level="error", message="目的変数を説明変数に含めないでください。"))
+        # 完全多重共線の検出はデータ依存のため run でベストエフォートに行う。
         return ValidationResult(ok=not any(i.level == "error" for i in issues), issues=issues)
 
     def run(self, config: AnalysisConfig, df: pd.DataFrame) -> AnalysisResult:
@@ -67,9 +77,29 @@ class LinearRegression(AnalysisMethod):
         target = config.target
         cols = config.explanatory
         sub = df[[target] + cols].dropna()
+
+        # データ依存の前提検査（個別手法編 6）。欠損除去後の行数は profile では
+        # 分からないため、行数 <= 説明変数の数+1 のときはここでガードする。
+        X_raw = _dummy_encode(sub, cols).astype(float)
+        n_params = X_raw.shape[1] + 1  # 定数項を含む
+        if len(sub) <= n_params:
+            return AnalysisResult(
+                method=self.name, sample_size=len(sub),
+                warnings=[f"有効データ（{len(sub)}件）が説明変数の数に対して不足しており、重回帰を実行できません。"],
+            )
+
         y = sub[target].astype(float)
-        X = _dummy_encode(sub, cols).astype(float)
-        X = sm.add_constant(X, has_constant="add")
+        X = sm.add_constant(X_raw, has_constant="add")
+
+        # 完全多重共線（説明変数間の厳密な線形従属）をベストエフォートで検出する。
+        # 行列のランクが列数に満たない場合は係数が一意に定まらない。
+        import numpy as np
+
+        if np.linalg.matrix_rank(X.values) < X.shape[1]:
+            return AnalysisResult(
+                method=self.name, sample_size=len(sub),
+                warnings=["説明変数の間に完全な相関（多重共線性）があり、係数を一意に推定できません。重複・従属する変数を外してください。"],
+            )
 
         model = sm.OLS(y, X).fit()
         conf = model.conf_int()
@@ -120,6 +150,10 @@ class LinearRegression(AnalysisMethod):
         )
 
     def interpret(self, result: AnalysisResult) -> Interpretation:
+        if not result.summary_metrics:
+            return Interpretation(sentences=[
+                InterpretSentence(level="caution", text=" / ".join(result.warnings))
+            ])
         sentences: list[InterpretSentence] = []
         m = {x.key: x for x in result.summary_metrics}
         r2 = float(m["r2"].value)
