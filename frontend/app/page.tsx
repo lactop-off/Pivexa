@@ -43,6 +43,17 @@ export default function HomePage() {
     }
   }
 
+  async function remove(d: Dataset) {
+    if (!confirm(`「${d.name}」を削除します。よろしいですか？`)) return;
+    setError("");
+    try {
+      await api.del(`/datasets/${d.id}`);
+      reload();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "削除に失敗しました。");
+    }
+  }
+
   if (!ready) return <p className="muted">読み込み中...</p>;
 
   return (
@@ -80,6 +91,9 @@ export default function HomePage() {
             <Link href={`/datasets/${d.id}/profile`}>
               <button className="secondary">開く</button>
             </Link>
+            <button className="danger" onClick={() => remove(d)}>
+              削除
+            </button>
           </div>
         ))}
       </div>

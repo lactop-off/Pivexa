@@ -112,6 +112,25 @@ def scatter(x: pd.Series, y: pd.Series, label: str, kind: str = "scatter") -> Ch
     return ChartRef(kind=kind, label=label, path=path)
 
 
+def residual_plot(predicted, residuals, label: str) -> ChartRef | None:
+    """残差プロット（個別手法編 6）。
+
+    横軸=予測値、縦軸=残差（実測−予測）の散布図。y=0 に基準線を引き、
+    残差が0周りにランダムに散らばっているか（線形性・等分散の前提）を目視確認する。
+    """
+    if not _enabled():
+        return None
+    fig, ax = _new_fig()
+    ax.scatter(predicted, residuals, alpha=0.6, color="#4C78A8")
+    ax.axhline(0, color="gray", linestyle="--")
+    ax.set_xlabel("予測値")
+    ax.set_ylabel("残差")
+    ax.set_title(label)
+    path = _new_path("residual")
+    _save(fig, path)
+    return ChartRef(kind="residual", label=label, path=path)
+
+
 def bar(labels: list[str], values: list[float], label: str, errors: list[float] | None = None) -> ChartRef | None:
     if not _enabled():
         return None

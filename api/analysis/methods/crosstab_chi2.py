@@ -56,6 +56,7 @@ class CrosstabChi2(AnalysisMethod):
         return ValidationResult(ok=not any(i.level == "error" for i in issues), issues=issues)
 
     def run(self, config: AnalysisConfig, df: pd.DataFrame) -> AnalysisResult:
+        alpha = float(config.options.get("alpha", 0.05))
         row_col = config.options.get("row", config.explanatory[0])
         col_col = config.options.get("col", config.explanatory[1])
         sub = df[[row_col, col_col]].dropna()
@@ -80,7 +81,7 @@ class CrosstabChi2(AnalysisMethod):
 
         metrics = [
             Metric(key="chi2", label="カイ二乗値", value=round(float(chi2), 4)),
-            Metric(key="p_value", label="P値", value=round(float(p), 4), significant=p < 0.05),
+            Metric(key="p_value", label="P値", value=round(float(p), 4), significant=p < alpha),
             Metric(key="dof", label="自由度", value=int(dof)),
             Metric(key="cramers_v", label="Cramér's V", value=round(cv, 4)),
         ]
@@ -106,6 +107,7 @@ class CrosstabChi2(AnalysisMethod):
                 "expected": pd.DataFrame(
                     expected, index=observed.index, columns=observed.columns
                 ).round(2).to_dict(),
+                "alpha": alpha,
             },
             sample_size=len(sub),
             warnings=warnings,
@@ -119,8 +121,9 @@ class CrosstabChi2(AnalysisMethod):
         m = {x.key: x for x in result.summary_metrics}
         p = float(m["p_value"].value)
         cv = float(m["cramers_v"].value)
+        alpha = float(result.tables.get("alpha", 0.05))
         sentences: list[InterpretSentence] = []
-        if p < 0.05:
+        if p < alpha:
             strength = "強い" if cv >= 0.5 else "中程度の" if cv >= 0.3 else "弱い"
             sentences.append(
                 InterpretSentence(

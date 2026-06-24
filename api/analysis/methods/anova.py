@@ -60,6 +60,8 @@ class Anova(AnalysisMethod):
         from statsmodels.formula.api import ols
         from statsmodels.stats.multicomp import pairwise_tukeyhsd
 
+        alpha = float(config.options.get("alpha", 0.05))
+        posthoc_enabled = bool(config.options.get("posthoc", True))
         target = config.target
         group = config.options["group"]
         sub = df[[target, group]].dropna().rename(columns={target: "y", group: "g"})
@@ -87,8 +89,10 @@ class Anova(AnalysisMethod):
         ss_between = float(table.loc["C(g)", "sum_sq"])
         ss_within = float(table.loc["Residual", "sum_sq"])
 
+        # Tukey 多重比較（個別手法編 5）。posthoc=False のときはスキップする。
+        # 全体検定が有意（p<alpha）のときのみ群間の対比較を行う。
         posthoc_rows = []
-        if p < 0.05:
+        if posthoc_enabled and p < alpha:
             tukey = pairwise_tukeyhsd(sub["y"], sub["g"])
             for row in tukey.summary().data[1:]:
                 posthoc_rows.append({
@@ -106,13 +110,13 @@ class Anova(AnalysisMethod):
 
         metrics = [
             Metric(key="F", label="F値", value=round(f, 4)),
-            Metric(key="p_value", label="P値", value=round(p, 4), significant=p < 0.05),
+            Metric(key="p_value", label="P値", value=round(p, 4), significant=p < alpha),
             Metric(key="ss_between", label="群間平方和", value=round(ss_between, 4)),
             Metric(key="ss_within", label="群内平方和", value=round(ss_within, 4)),
         ]
         return AnalysisResult(
             method=self.name, summary_metrics=metrics, charts=chart_refs,
-            tables={"posthoc": posthoc_rows, "group_means": means.round(4).to_dict()},
+            tables={"posthoc": posthoc_rows, "group_means": means.round(4).to_dict(), "alpha": alpha},
             sample_size=len(sub),
         )
 
@@ -123,8 +127,9 @@ class Anova(AnalysisMethod):
             ])
         m = {x.key: x for x in result.summary_metrics}
         p = float(m["p_value"].value)
+        alpha = float(result.tables.get("alpha", 0.05))
         sentences: list[InterpretSentence] = []
-        if p < 0.05:
+        if p < alpha:
             sentences.append(InterpretSentence(
                 level="highlight",
                 text=f"少なくとも1つの群で平均が異なります（F={m['F'].value}, p={p:.3f}）。",

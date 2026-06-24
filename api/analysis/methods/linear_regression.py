@@ -101,8 +101,15 @@ class LinearRegression(AnalysisMethod):
                 warnings=["説明変数の間に完全な相関（多重共線性）があり、係数を一意に推定できません。重複・従属する変数を外してください。"],
             )
 
+        alpha = float(config.options.get("alpha", 0.05))
+        standardize = bool(config.options.get("standardize", False))
+
         model = sm.OLS(y, X).fit()
         conf = model.conf_int()
+
+        # 標準化係数（個別手法編 6）。std_coef = coef * std(x_j) / std(y)。
+        # y の標準偏差が0（定数）の場合は計算できないため付与しない。
+        std_y = float(y.std(ddof=1))
 
         # VIF（定数項を除く）
         vifs = {}
@@ -118,6 +125,12 @@ class LinearRegression(AnalysisMethod):
         for name in X.columns:
             if name == "const":
                 continue
+            extra: dict[str, float] = {}
+            if name in vifs:
+                extra["vif"] = round(vifs.get(name, float("nan")), 3)
+            if standardize and std_y > 0:
+                std_x = float(X_raw[name].std(ddof=1))
+                extra["std_coef"] = round(float(model.params[name]) * std_x / std_y, 4)
             coefs.append(CoefficientRow(
                 variable=name,
                 coef=float(model.params[name]),
@@ -126,7 +139,7 @@ class LinearRegression(AnalysisMethod):
                 p_value=float(model.pvalues[name]),
                 ci_low=float(conf.loc[name, 0]),
                 ci_high=float(conf.loc[name, 1]),
-                extra={"vif": round(vifs.get(name, float("nan")), 3)} if name in vifs else {},
+                extra=extra,
             ))
 
         metrics = [
@@ -134,19 +147,26 @@ class LinearRegression(AnalysisMethod):
             Metric(key="adj_r2", label="調整済みR²", value=round(float(model.rsquared_adj), 4)),
             Metric(key="f", label="F値", value=round(float(model.fvalue), 4)),
             Metric(key="f_pvalue", label="F検定 P値", value=round(float(model.f_pvalue), 4),
-                   significant=float(model.f_pvalue) < 0.05),
+                   significant=float(model.f_pvalue) < alpha),
         ]
         chart_refs = []
         pred = model.predict(X)
         ref = charts.scatter(y, pred, "実測値 vs 予測値")
         if ref:
             chart_refs.append(ref)
+        # 残差プロット（個別手法編 6）。予測値に対する残差の散らばりを可視化する。
+        resid = y - pred
+        rref = charts.residual_plot(pred, resid, "残差プロット")
+        if rref:
+            chart_refs.append(rref)
 
         warnings = [f"多重共線性に注意（{n} の VIF={v:.1f}）" for n, v in vifs.items() if v >= 10]
 
         return AnalysisResult(
             method=self.name, summary_metrics=metrics, coefficients=coefs,
-            charts=chart_refs, sample_size=len(sub), warnings=warnings,
+            charts=chart_refs,
+            tables={"alpha": alpha, "standardized": standardize and std_y > 0},
+            sample_size=len(sub), warnings=warnings,
         )
 
     def interpret(self, result: AnalysisResult) -> Interpretation:
@@ -155,6 +175,7 @@ class LinearRegression(AnalysisMethod):
                 InterpretSentence(level="caution", text=" / ".join(result.warnings))
             ])
         sentences: list[InterpretSentence] = []
+        alpha = float(result.tables.get("alpha", 0.05))
         m = {x.key: x for x in result.summary_metrics}
         r2 = float(m["r2"].value)
         power = "高い" if r2 >= 0.7 else "中程度の" if r2 >= 0.4 else "低い"
@@ -165,13 +186,19 @@ class LinearRegression(AnalysisMethod):
         for c in result.coefficients:
             if c.p_value is None:
                 continue
-            sentences.append(significance_sentence(c.variable, c.p_value))
-            if c.p_value < 0.05:
+            sentences.append(significance_sentence(c.variable, c.p_value, alpha=alpha))
+            if c.p_value < alpha:
                 d = "増える" if c.coef > 0 else "減る"
                 sentences.append(InterpretSentence(
                     level="highlight",
                     text=f"「{c.variable}」が1増えると目的変数は約{abs(c.coef):.3f}{d}傾向です。",
                 ))
+        # 標準化係数を出した場合、影響度の比較に使える旨を案内する（個別手法編 6）。
+        if result.tables.get("standardized"):
+            sentences.append(InterpretSentence(
+                level="info",
+                text="標準化係数（std_coef）を算出しました。単位の異なる説明変数同士で影響度の大小を比較できます。",
+            ))
         for w in result.warnings:
             sentences.append(InterpretSentence(level="caution", text=w))
         c2 = small_sample_caution(result.sample_size)

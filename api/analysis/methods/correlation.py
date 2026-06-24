@@ -55,6 +55,7 @@ class Correlation(AnalysisMethod):
 
     def run(self, config: AnalysisConfig, df: pd.DataFrame) -> AnalysisResult:
         method = config.options.get("method", "pearson")
+        alpha = float(config.options.get("alpha", 0.05))
         cols = config.explanatory
         sub = df[cols].dropna()
         corr = sub.corr(method=method)
@@ -87,26 +88,27 @@ class Correlation(AnalysisMethod):
                     key="strongest_r",
                     label=f"最も強い相関（{best['a']}×{best['b']}）",
                     value=round(best["r"], 4),
-                    significant=best["p_value"] < 0.05,
+                    significant=best["p_value"] < alpha,
                 )
             )
 
         return AnalysisResult(
             method=self.name,
             summary_metrics=metrics,
-            tables={"corr_matrix": corr.round(4).to_dict(), "pairs": pairs},
+            tables={"corr_matrix": corr.round(4).to_dict(), "pairs": pairs, "alpha": alpha},
             charts=chart_refs,
             sample_size=len(sub),
         )
 
     def interpret(self, result: AnalysisResult) -> Interpretation:
         sentences: list[InterpretSentence] = []
+        alpha = float(result.tables.get("alpha", 0.05))
         for pair in result.tables.get("pairs", []):
             r, p = pair["r"], pair["p_value"]
             strength = "強い" if abs(r) >= 0.7 else "中程度の" if abs(r) >= 0.4 else "弱い"
             direction = "正の" if r > 0 else "負の"
-            sig = "統計的に有意です" if p < 0.05 else "統計的に有意とは言えません"
-            level = "highlight" if (abs(r) >= 0.4 and p < 0.05) else "info"
+            sig = "統計的に有意です" if p < alpha else "統計的に有意とは言えません"
+            level = "highlight" if (abs(r) >= 0.4 and p < alpha) else "info"
             sentences.append(
                 InterpretSentence(
                     level=level,
